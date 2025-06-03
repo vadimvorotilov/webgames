@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
+	"os/signal"
 
 	"webgames/internal/web"
 )
@@ -23,17 +23,10 @@ func run(
 	stdout io.Writer,
 	args []string,
 ) error {
-	// ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
-	// defer cancel()
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	defer cancel()
 
-	logger := log.Default()
-
-	deps := web.Deps{
-		Logger: logger,
-		Addr:   ":3000",
-	}
-
-	if err := web.ListenAndServe(deps); err != nil {
+	if err := web.ListenAndServe(":3000"); err != nil {
 		return err
 	}
 

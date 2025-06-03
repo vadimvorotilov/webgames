@@ -31,6 +31,19 @@ const (
 
 type Cell int
 
+func (c Cell) String() string {
+	switch c {
+	case 0:
+		return " "
+	case 1:
+		return "X"
+	case 2:
+		return "O"
+	}
+
+	return ""
+}
+
 const (
 	CellEmpty Cell = iota
 	CellX

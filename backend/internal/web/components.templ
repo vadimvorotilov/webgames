@@ -1,0 +1,78 @@
+package web
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+templ layout() {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>Webgames</title>
+			<!-- Tailwind CSS (output) -->
+			<link href="/assets/css/output.css" rel="stylesheet"/>
+			<!-- Datastar Hypermedia -->
+   			<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-beta.11/bundles/datastar.js"></script>
+		</head>
+		<body>
+			<div id="root" data-signals="{x: 0, y: 0}">
+				{ children... }
+			</div>
+			<script type="text/javascript" src="/assets/js/index.js"></script>
+		</body>
+	</html>
+}
+
+templ MainPage() {
+	@layout() {
+		<div>
+			<ul>
+				<li>Create Games</li>
+				<li>List Games</li>
+			</ul>
+		</div>
+	}
+}
+
+func turnJSON(x, y int) string {
+	turn := map[string]int{
+		"x": x,
+		"y": y,
+	}
+	bytes, _ := json.Marshal(turn)
+	
+	return string(bytes)
+}
+
+templ GamePage(game *Game) {
+	@layout() {
+		<div class="h-screen flex items-center justify-center">
+		<div id="game-board">
+			<h3>Board</h3>
+			<div id="game-status">Status: { game.g.Status }</div>
+			for y, row := range game.g.Board {
+				<div class="flex flex-row">
+					for x, cell := range row {
+						@Cell(cell.String(), x, y)
+					}
+				</div>
+			}
+		  </div>
+		</div>
+		
+	}
+}
+
+templ Cell(cell string, x int, y int) {
+	<div
+		id={ fmt.Sprintf("cell-%d-%d", x, y) }
+		class="w-[20px] h-[20px] border hover:cursor-pointer"
+		data-on-click={ fmt.Sprintf(`$x = %d; $y = %d; @post("/games/%d/turn")`, x, y, 1) }						
+	
+	>
+			{cell}
+	</div>
+}
