@@ -1,0 +1,6 @@
+{
+  "componentsDir": "internal/ui/components",
+  "utilsDir": "internal/utils",
+  "moduleName": "webgames",
+  "jsDir": "assets/js"
+}

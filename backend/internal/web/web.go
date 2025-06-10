@@ -2,16 +2,14 @@ package web
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
-
 	"webgames/internal/mnkgame"
+	"webgames/internal/pubsub"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -21,51 +19,11 @@ import (
 type contextKey string
 
 const (
-	contextKeyUserId contextKey = "userid"
+	contextKeyUserID contextKey = "userid"
 )
-
-var gamesIdCount int = 2
-var games = make(map[int]*Game)
-
-type GameStatus int
-
-const (
-	GameStatusNoOpponent GameStatus = iota
-	GameStatusPlaying
-	GameStatusFinished
-)
-
-type Game struct {
-	ID      string
-	playerX string
-	playerO string
-	Status  GameStatus
-	g       *mnkgame.Game
-}
-
-func authMiddleware(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("userid")
-		if err != nil {
-			cookie = &http.Cookie{
-				Name:     "userid",
-				Value:    uuid.NewString(),
-				MaxAge:   86400000,
-				HttpOnly: true, // Recommended: Prevents client-side JS access (security)
-				Secure:   true, // Recommended: Only send over HTTPS (security)
-			}
-
-			http.SetCookie(w, cookie)
-		}
-
-		ctx := context.WithValue(r.Context(), contextKeyUserId, cookie.Value)
-		r = r.WithContext(ctx)
-
-		h.ServeHTTP(w, r)
-	})
-}
 
 func ListenAndServe(addr string) error {
+
 	mux := http.NewServeMux()
 	md := func(h http.Handler) http.Handler {
 		return middleware.Logger(
@@ -75,6 +33,8 @@ func ListenAndServe(addr string) error {
 		)
 	}
 
+	ps := pubsub.NewPubSub[struct{}]()
+
 	assetHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		fs := http.FileServer(http.Dir("./assets"))
@@ -82,14 +42,22 @@ func ListenAndServe(addr string) error {
 	})
 
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", assetHandler))
-	mux.Handle("GET /games/{gameId}/sse", md(sseHandler()))
-	mux.Handle("GET /games/{gameId}", md(getGame()))
-	mux.Handle("POST /games/{gameId}/turn", md(makeTurn()))
-	mux.Handle("POST /games/{gameId}/accept", md(acceptGame()))
+	mux.Handle("GET /games/{gameID}/sse", md(sseHandler(ps)))
+	mux.Handle("GET /games/{gameID}", md(getGame()))
+	mux.Handle("POST /games/{gameID}/turn", md(makeTurn(ps)))
+	mux.Handle("POST /games/{gameID}/opponent", md(becomeOpponent(ps)))
 	mux.Handle("POST /games", md(createGame()))
 	mux.Handle("GET /", md(mainHandler()))
 
-	return http.ListenAndServe(addr, mux)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      0,
+	}
+
+	return server.ListenAndServe()
 }
 
 func mainHandler() http.Handler {
@@ -97,7 +65,6 @@ func mainHandler() http.Handler {
 		func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/" {
 				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte("Not Found"))
 				return
 			}
 
@@ -109,62 +76,62 @@ func mainHandler() http.Handler {
 func getGame() http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			gameId, _ := strconv.Atoi(r.PathValue("gameId"))
-			game, ok := games[gameId]
+			gameID := mnkgame.GameID(r.PathValue("gameID"))
+			game, ok := mnkgame.FindGame(gameID)
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
+			playerID := r.Context().Value(contextKeyUserID).(string)
 
-			GamePage(game).Render(r.Context(), w)
+			GamePage(game, mnkgame.PlayerID(playerID)).Render(r.Context(), w)
 		},
 	)
+}
+
+func getUserID(ctx context.Context) string {
+	return ctx.Value(contextKeyUserID).(string)
 }
 
 func createGame() http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			game := mnkgame.NewGame(3, 3, 3)
-			games[gamesIdCount] = &Game{
-				playerX: "1",
-				playerO: "2",
-				g:       game,
+			params, err := readJSON[mnkgame.CreateGameParams](r)
+			if err != nil {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				log.Println(err)
+				return
 			}
-			gamesIdCount++
 
-			writeJSON(w, http.StatusOK, game)
+			params.PlayerXID = getUserID(r.Context())
+			game := mnkgame.CreateGame(params)
+
+			log.Println(*game)
+
+			sse := datastar.NewSSE(w, r)
+			url := fmt.Sprintf("/games/%s", game.ID)
+			sse.Redirect(url)
 		},
 	)
 }
 
-func makeTurn() http.Handler {
+func makeTurn(ps *pubsub.PubSub[struct{}]) http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			gameId, _ := strconv.Atoi(r.PathValue("gameId"))
-			game, ok := games[gameId]
+			gameID := mnkgame.GameID(r.PathValue("gameID"))
+			game, ok := mnkgame.FindGame(gameID)
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 
-			type Payload struct {
-				X int
-				Y int
-			}
-
-			payload, err := readJSON[Payload](r)
+			position, err := readJSON[mnkgame.Position](r)
 			if err != nil {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
 			}
 
-			log.Println(payload)
-
-			// e := &sse.Message{}
-			// e.AppendData(string(bytes))
-			// sseServer.Publish(e)
-
-			err = mnkgame.MakeTurn(game.g, mnkgame.Position{X: payload.X, Y: payload.Y})
+			err = mnkgame.MakeTurn(game, position)
 
 			if err != nil {
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -172,46 +139,52 @@ func makeTurn() http.Handler {
 				return
 			}
 
-			sse := datastar.NewSSE(w, r)
-			sse.MergeFragmentTempl(Cell(game.g.Board[payload.Y][payload.X].String(), payload.X, payload.Y))
+			// sse := datastar.NewSSE(w, r)
+			// sse.MergeFragmentTempl(Cell(game.Board[position.Y][position.X].String(), position.X, position.Y))
 
+			ps.Publish("game", struct{}{})
 		},
 	)
 }
 
-func acceptGame() http.Handler {
+func becomeOpponent(ps *pubsub.PubSub[struct{}]) http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			gameId, _ := strconv.Atoi(r.PathValue("gameId"))
-			_, ok := games[gameId]
+			gameID := mnkgame.GameID(r.PathValue("gameID"))
+			game, ok := mnkgame.FindGame(gameID)
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 
-			// e := &sse.Message{}
-			// e.AppendData("GAME ACCEPTED")
+			playerID := r.Context().Value(contextKeyUserID).(string)
+			err := mnkgame.BecomeOpponent(game, mnkgame.PlayerID(playerID))
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
 
-			// err := sseServer.Publish(e)
-			// if err != nil {
-			// 	fmt.Println(err)
-			// }
+			ps.Publish("game", struct{}{})
+
+			// sse := datastar.NewSSE(w, r)
+			// sse.MergeFragmentTempl(GameBoard(game, mnkgame.PlayerID(playerID)))
 		},
 	)
 }
 
-func sseHandler() http.Handler {
+func sseHandler(ps *pubsub.PubSub[struct{}]) http.Handler {
 	return http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			gameId, _ := strconv.Atoi(r.PathValue("gameId"))
-			_, ok := games[gameId]
+			gameID := mnkgame.GameID(r.PathValue("gameID"))
+			_, ok := mnkgame.FindGame(gameID)
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
 
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
+			playerID := r.Context().Value(contextKeyUserID).(string)
+			ch := ps.Subscribe("game")
+			defer ps.Unsubscribe("game", ch)
 
 			sse := datastar.NewSSE(w, r)
 			for {
@@ -219,9 +192,9 @@ func sseHandler() http.Handler {
 				case <-r.Context().Done():
 					slog.Debug("Client connection closed")
 					return
-				case <-ticker.C:
-					frag := fmt.Sprintf(`<div id="random-string">%s</div>`, rand.Text())
-					sse.MergeFragments(frag)
+				case <-ch:
+					game, _ := mnkgame.FindGame(gameID)
+					sse.MergeFragmentTempl(GameBoard(game, mnkgame.PlayerID(playerID)))
 				}
 			}
 
@@ -244,4 +217,28 @@ func readJSON[T any](r *http.Request) (T, error) {
 		return v, fmt.Errorf("decode json: %w", err)
 	}
 	return v, nil
+}
+
+// userid := r.Context().Value(contextKeyUserID).(string)
+func authMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(string(contextKeyUserID))
+		if err != nil {
+			cookie = &http.Cookie{
+				Name:     string(contextKeyUserID),
+				Value:    uuid.NewString(),
+				Path:     "/",
+				MaxAge:   86400000,
+				HttpOnly: true, // Recommended: Prevents client-side JS access (security)
+				Secure:   true, // Recommended: Only send over HTTPS (security)
+			}
+
+			http.SetCookie(w, cookie)
+		}
+
+		ctx := context.WithValue(r.Context(), contextKeyUserID, cookie.Value)
+		r = r.WithContext(ctx)
+
+		h.ServeHTTP(w, r)
+	})
 }

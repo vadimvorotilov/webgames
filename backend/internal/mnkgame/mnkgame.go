@@ -3,13 +3,21 @@ package mnkgame
 import (
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
+type GameID string
+type PlayerID string
+
 type Game struct {
-	Board       [][]Cell
-	Status      Status
-	InARowToWin int
-	History     []Position
+	ID        GameID
+	PlayerXID PlayerID
+	PlayerOID PlayerID
+	Board     [][]Cell
+	Status    Status
+	WinRow    int
+	History   []Position
 }
 
 func (g *Game) Width() int {
@@ -53,7 +61,8 @@ const (
 type Status int
 
 const (
-	StatusTurnX Status = iota
+	StatusOpponent Status = iota
+	StatusTurnX
 	StatusTurnO
 	StatusWinX
 	StatusWinO
@@ -61,11 +70,12 @@ const (
 )
 
 var statusName = map[Status]string{
-	StatusTurnX: "Turn X",
-	StatusTurnO: "Turn O",
-	StatusWinX:  "Win X",
-	StatusWinO:  "Win O",
-	StatusDraw:  "Draw",
+	StatusOpponent: "Need opponent",
+	StatusTurnX:    "Turn X",
+	StatusTurnO:    "Turn O",
+	StatusWinX:     "Win X",
+	StatusWinO:     "Win O",
+	StatusDraw:     "Draw",
 }
 
 func (s Status) String() string {
@@ -77,16 +87,76 @@ type Position struct {
 	Y int
 }
 
-func NewGame(width int, height int, InARowToWin int) *Game {
+type CreateGameParams struct {
+	PlayerXID string
+	Width     int
+	Height    int
+	WinRow    int
+}
+
+type MakeTurnParams struct {
+	X int
+	Y int
+}
+
+var gamesRepository = map[GameID]*Game{
+	"9f4ef5fb-d1ce-4ecd-aa7c-3c5ba02bc0a7": {
+		ID:        "9f4ef5fb-d1ce-4ecd-aa7c-3c5ba02bc0a7",
+		PlayerXID: "74273137-5d5b-48b1-910c-9718afae8ae6",
+		PlayerOID: "",
+		WinRow:    3,
+		Board: [][]Cell{
+			{0, 0, 0},
+			{0, 0, 0},
+			{0, 0, 0},
+		},
+	},
+}
+
+func CreateGame(params CreateGameParams) *Game {
+	board := make(Board, params.Height)
+	for i := range board {
+		board[i] = make([]Cell, params.Width)
+	}
+
+	game := &Game{
+		ID:        GameID(uuid.NewString()),
+		PlayerXID: PlayerID(params.PlayerXID),
+		Board:     board,
+		WinRow:    params.WinRow,
+	}
+
+	gamesRepository[game.ID] = game
+	return game
+}
+
+func NewGame(width int, height int, winRow int) *Game {
 	board := make(Board, height)
 	for i := range board {
 		board[i] = make([]Cell, width)
 	}
 
 	return &Game{
-		Board:       board,
-		InARowToWin: InARowToWin,
+		ID:     GameID(uuid.NewString()),
+		Board:  board,
+		WinRow: winRow,
 	}
+}
+
+func BecomeOpponent(game *Game, playerID PlayerID) error {
+	if game.Status != StatusOpponent {
+		return fmt.Errorf("invalid game status: %s", game.Status)
+	}
+
+	game.PlayerOID = playerID
+	game.Status = StatusTurnX
+
+	return nil
+}
+
+func FindGame(id GameID) (*Game, bool) {
+	game, ok := gamesRepository[id]
+	return game, ok
 }
 
 func MakeTurn(g *Game, pos Position) error {
@@ -143,7 +213,7 @@ func checkWin(g *Game, pos Position, cell Cell) bool {
 	delta := 1
 
 	// check vertical
-	for window < g.InARowToWin {
+	for window < g.WinRow {
 		if pos.Y+delta >= 0 && pos.Y+delta < g.Height() && // out of bounds
 			cell == g.Board[pos.Y+delta][pos.X] { // equality
 			window++
@@ -162,12 +232,12 @@ func checkWin(g *Game, pos Position, cell Cell) bool {
 			break
 		}
 	}
-	if window == g.InARowToWin {
+	if window == g.WinRow {
 		return true
 	}
 
 	// // check horizontal
-	for window < g.InARowToWin {
+	for window < g.WinRow {
 		if pos.X+delta >= 0 && pos.X+delta < g.Width() && // out of bounds
 			cell == g.Board[pos.Y][pos.X+delta] { // equality
 			window++
@@ -184,7 +254,7 @@ func checkWin(g *Game, pos Position, cell Cell) bool {
 			break
 		}
 	}
-	if window == g.InARowToWin {
+	if window == g.WinRow {
 		return true
 	}
 
@@ -223,5 +293,5 @@ func checkWin(g *Game, pos Position, cell Cell) bool {
 	// 	}
 	// }
 
-	return window == g.InARowToWin
+	return window == g.WinRow
 }

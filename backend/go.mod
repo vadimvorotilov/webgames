@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	github.com/Oudwins/tailwind-merge-go v0.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/delaneyj/gostar v0.8.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect

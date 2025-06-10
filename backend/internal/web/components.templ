@@ -1,9 +1,17 @@
 package web
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
+	"webgames/internal/mnkgame"
+	"webgames/internal/ui/components/button"
+	"webgames/internal/ui/components/form"
+	"webgames/internal/ui/components/input"
 )
+
+func GetPlayerID(ctx context.Context) string {
+	return ctx.Value(contextKeyUserID).(string)
+}
 
 templ layout() {
 	<!DOCTYPE html>
@@ -15,12 +23,23 @@ templ layout() {
 			<!-- Tailwind CSS (output) -->
 			<link href="/assets/css/output.css" rel="stylesheet"/>
 			<!-- Datastar Hypermedia -->
-   			<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-beta.11/bundles/datastar.js"></script>
+			<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-beta.11/bundles/datastar.js"></script>
 		</head>
-		<body>
-			<div id="root" data-signals="{x: 0, y: 0}">
+		<body class="flex flex-col min-h-screen bg-gray-100 text-gray-800" data-signals="{x: 0, y: 0}">
+			<nav class="bg-blue-600 text-white p-4 shadow-md">
+				<div class="container mx-auto flex justify-between items-center">
+					<a href="/" class="text-xl font-bold">Webgames</a>
+					<span>PlayerID: { GetPlayerID(ctx) }</span>
+				</div>
+			</nav>
+			<main class="flex flex-grow container mx-auto p-4 py-8 justify-center">
 				{ children... }
-			</div>
+			</main>
+			<footer class="bg-gray-800 text-white p-4 mt-8">
+				<div class="container mx-auto text-center">
+					&copy; Webgames. All rights reserved.
+				</div>
+			</footer>
 			<script type="text/javascript" src="/assets/js/index.js"></script>
 		</body>
 	</html>
@@ -29,50 +48,128 @@ templ layout() {
 templ MainPage() {
 	@layout() {
 		<div>
-			<ul>
-				<li>Create Games</li>
-				<li>List Games</li>
-			</ul>
+			<h1 class="text-3xl font-bold mb-4">Create New Game</h1>
+			@CreateGameForm()
 		</div>
 	}
 }
 
-func turnJSON(x, y int) string {
-	turn := map[string]int{
-		"x": x,
-		"y": y,
-	}
-	bytes, _ := json.Marshal(turn)
-	
-	return string(bytes)
-}
-
-templ GamePage(game *Game) {
-	@layout() {
-		<div class="h-screen flex items-center justify-center">
-		<div id="game-board">
-			<h3>Board</h3>
-			<div id="game-status">Status: { game.g.Status }</div>
-			for y, row := range game.g.Board {
-				<div class="flex flex-row">
-					for x, cell := range row {
-						@Cell(cell.String(), x, y)
-					}
-				</div>
+templ CreateGameForm() {
+	<div id="create-game-form" class="w-full max-w-sm">
+		@form.Item() {
+			@form.Label(form.LabelProps{
+				For: "board-width-input",
+			}) {
+				Board Width
 			}
-		  </div>
+			@input.Input(input.Props{
+				ID:       "board-width-input",
+				Type:     input.TypeNumber,
+				Value:    "3",
+				Required: true,
+				Attributes: templ.Attributes{
+					"data-bind": "width",
+					"min":       "3",
+					"max":       "50",
+				},
+			})
+			// @form.Message(form.MessageProps{Variant: form.MessageVariantError}) {
+			// 	Please fix an error
+			// }
+			@form.Label(form.LabelProps{
+				For: "board-height-input",
+			}) {
+				Board Height
+			}
+			@input.Input(input.Props{
+				ID:       "board-height-input",
+				Type:     input.TypeNumber,
+				Value:    "3",
+				Required: true,
+				Attributes: templ.Attributes{
+					"data-bind": "height",
+					"min":       "3",
+					"max":       "50",
+				},
+			})
+			@form.Label(form.LabelProps{
+				For: "winRow-input",
+			}) {
+				In a Row to Win
+			}
+			@input.Input(input.Props{
+				ID:       "winRow-input",
+				Type:     input.TypeNumber,
+				Value:    "3",
+				Required: true,
+				Attributes: templ.Attributes{
+					"data-bind": "winRow",
+					"min":       "3",
+					"max":       "50",
+				},
+			})
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"data-on-click": "@post('/games')",
+				},
+			}) {
+				Submit
+			}
+		}
+	</div>
+}
+
+templ GamePage(game *mnkgame.Game, playerID mnkgame.PlayerID) {
+	@layout() {
+		<div
+			class="h-screen flex items-center justify-center"
+			data-on-load={ fmt.Sprintf("@get('/games/%v/sse',{openWhenHidden:true})", game.ID) }
+		>
+			@GameBoard(game, playerID)
 		</div>
-		
 	}
 }
 
-templ Cell(cell string, x int, y int) {
-	<div
-		id={ fmt.Sprintf("cell-%d-%d", x, y) }
-		class="w-[20px] h-[20px] border hover:cursor-pointer"
-		data-on-click={ fmt.Sprintf(`$x = %d; $y = %d; @post("/games/%d/turn")`, x, y, 1) }						
-	
-	>
-			{cell}
+func showAcceptButton(game *mnkgame.Game, playerID mnkgame.PlayerID) bool {
+	return game.Status == mnkgame.StatusOpponent && game.PlayerXID != playerID
+}
+
+func isActive(game *mnkgame.Game, playerID mnkgame.PlayerID) bool {
+	x := game.Status == mnkgame.StatusTurnX && game.PlayerXID == playerID
+	o := game.Status == mnkgame.StatusTurnO && game.PlayerOID == playerID
+
+	return x || o
+}
+
+templ GameBoard(game *mnkgame.Game, playerID mnkgame.PlayerID) {
+	<div id="game-board">
+		<h3>Board</h3>
+		<div>Player X: { game.PlayerXID }</div>
+		<div>Player O: { game.PlayerOID }</div>
+		<div id="game-status">Status: { game.Status }</div>
+		if showAcceptButton(game, playerID) {
+			@button.Button(button.Props{
+				Attributes: templ.Attributes{
+					"data-on-click": fmt.Sprintf("@post('/games/%v/opponent')", game.ID),
+				},
+			}) {
+				Accept the game
+			}
+		}
+		for y, row := range game.Board {
+			<div class={ "flex flex-row", templ.KV("hover:cursor-pointer", isActive(game, playerID)) }>
+				for x, cell := range row {
+					<div
+						id={ fmt.Sprintf("cell-%d-%d", x, y) }
+						class={ "w-[30px] h-[30px] border text-center", templ.KV("hover:border-red-400", isActive(game, playerID)) }
+						if isActive(game, playerID) {
+							data-on-click={ fmt.Sprintf(`$x = %d; $y = %d; @post("/games/%v/turn")`, x, y, game.ID) }
+						}
+					>
+						{ cell }
+					</div>
+				}
+			</div>
+		}
 	</div>
 }
